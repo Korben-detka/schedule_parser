@@ -50,10 +50,14 @@ long_recreation_duration  = 40    # Длительность большой пе
 
 semester_starts_at = "01-09-2025" # Дата начала семестра (первого учебного дня)
 
-class_names_cast = {
+class_names_cast = {              # Переименовывание дисциплин
   "Микропроцессорные средства и системы" : "МПСиС",
   "Микропроцессорные системы и средства" : "МПСиС",
   "Функциональная верификация" : "FV"
+}
+
+excluded_disciplines = {          # Удаление ненужных дисциплин
+    "Практическая подготовка"
 }
 
 calendar_file_name = "schedule.ics"
@@ -269,11 +273,24 @@ def create_ics_file(schedule, start_date, academic_hour_duration, short_recreati
   # Записываем календарь в файл
   with open(file_name, 'wb') as f:
     f.write(cal.to_ical())
-###############################################################################
 
+def base_class_name(name: str) -> str:
+    # отрезаем всё после первой скобки […
+    name = name.split(" [")[0]
+    # если в преподавательском режиме к названию приписана группа,
+    # убираем последнюю словесную часть вида "… ИВТ-31В"
+    return re.sub(r"\s+[А-ЯA-Z\-0-9]{3,}$", "", name).strip()
+
+###############################################################################
 if educator_mode:
   unmerged_class_list = create_list_of_classes_for_educator(groups, educator, url, cookie)
 else:
   unmerged_class_list = create_list_of_classes_for_student(group, url, cookie)
+
+unmerged_class_list = [
+    entry for entry in unmerged_class_list
+      if base_class_name(entry.class_name) not in excluded_disciplines
+]
+
 merged_class_list = merge_list_of_classes(unmerged_class_list)
 create_ics_file(merged_class_list, semester_starts_at, academic_hour_duration, short_recreation_duration, long_recreation_duration, calendar_file_name, repeat_number)
