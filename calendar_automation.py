@@ -39,9 +39,9 @@ import re
 # Область конфигурации
 ###############################################################################
 # Режим работы (True — преподавательский, False — студенческий)
-educator_mode = False
+educator_mode = True
 group         = "ИВТ-14М"                              # указывается если educator_mode = False
-educator      = "Солодовников Андрей Павлович"  # указывается если educator_mode = True
+educator      = "Калёнов Александр Дмитриевич"  # указывается если educator_mode = True
 groups        = ["ИВТ-31В", "ПИН-31", "ПИН-32", "ПИН-33", "ИВТ-14М"] # указывается если educator_mode = True
 
 academic_hour_duration    = 40    # Длительность академического часа
@@ -147,8 +147,7 @@ def create_list_of_classes_for_educator(groups, educator, url, cookie):
                             double_class["DayNumber"] ,
                             double_class["Room"]["Name"],
                             double_class["Day"] - 1,         # приводим поля
-                            double_class["Time"]["Code"] - 1, # к нумерации с нуля
-                            double_class["Class"]["TeacherFull"]
+                            double_class["Time"]["Code"] - 1 # к нумерации с нуля
                             )
                           )
   return class_list
