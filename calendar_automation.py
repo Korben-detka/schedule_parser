@@ -187,15 +187,13 @@ def merge_list_of_classes(class_list):
   class_list.sort()
   i = 0
   list_len = len(class_list)
-  while_cond = True
-  while while_cond:
+  while i < (list_len - 1):
     if(class_list[i].is_aligned_class(class_list[i+1])):
       class_list[i].duration += 1
       del class_list[i+1]
       list_len -= 1
       i -= 1
     i += 1
-    while_cond = i < (list_len - 1)
   return class_list
 ###############################################################################
 
