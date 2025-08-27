@@ -39,8 +39,8 @@ import re
 # Область конфигурации
 ###############################################################################
 # Режим работы (True — преподавательский, False — студенческий)
-educator_mode = True
-group         = ""                              # указывается если educator_mode = False
+educator_mode = False
+group         = "ИВТ-14М"                              # указывается если educator_mode = False
 educator      = "Солодовников Андрей Павлович"  # указывается если educator_mode = True
 groups        = ["ИВТ-31В", "ПИН-31", "ПИН-32", "ПИН-33", "ИВТ-14М"] # указывается если educator_mode = True
 
@@ -48,7 +48,7 @@ academic_hour_duration    = 40    # Длительность академиче�
 short_recreation_duration = 10    # Длительность короткой перемены
 long_recreation_duration  = 40    # Длительность большой перемены
 
-semester_starts_at = "05-02-2025" # Дата начала семестра (первого учебного дня)
+semester_starts_at = "01-09-2025" # Дата начала семестра (первого учебного дня)
 
 class_names_cast = {
   "Микропроцессорные средства и системы" : "МПСиС",
@@ -72,7 +72,7 @@ cookie = None
 ###############################################################################
 @total_ordering
 class ScheduleEntry:
-  def __init__(self, class_name, week_code, room_number, week_day, slot_number):
+  def __init__(self, class_name, week_code, room_number, week_day, slot_number, teacher=""):
     self.class_name   = class_name  # Название пары
     self.week_code    = week_code   # Код недели:  0 — "1-ый числитель",
                                     #              3 — "2-ой знаменатель"
@@ -80,6 +80,7 @@ class ScheduleEntry:
     self.week_day     = week_day    # День недели (отсчет ведется с нуля)
     self.slot_number  = slot_number # Номер пары  (отсчет ведется с нуля)
     self.duration     = 1           # Длительность занятия в парах
+    self.teacher      = teacher     # Преподаватель, ведущий пару
 
   def __eq__(self, other):
     if isinstance(other, ScheduleEntry):
@@ -98,13 +99,12 @@ class ScheduleEntry:
             self.week_code   == other.week_code and \
             self.week_day    == other.week_day and \
             self.room_number == other.room_number and \
+            self.teacher == other.teacher and \
             abs(self.slot_number - other.slot_number) == 1
 
   def __repr__(self):
     return f"\n{self.class_name}\n\tweek_code  : {self.week_code}\n\tweek_day   : {self.week_day}\n\troom_number: {self.room_number}\n\tduration   : {self.duration}"
 ###############################################################################
-
-
 
 ###############################################################################
 # Функция, формирующая название занятия для записи в календаре.
@@ -125,8 +125,6 @@ def get_class_name(name):
   return res_name
 ###############################################################################
 
-
-
 ###############################################################################
 # Функция, формирующая список занятий, для указанных групп указанного
 # преподавателя.
@@ -145,13 +143,12 @@ def create_list_of_classes_for_educator(groups, educator, url, cookie):
                             double_class["DayNumber"] ,
                             double_class["Room"]["Name"],
                             double_class["Day"] - 1,         # приводим поля
-                            double_class["Time"]["Code"] - 1 # к нумерации с нуля
+                            double_class["Time"]["Code"] - 1, # к нумерации с нуля
+                            double_class["Class"]["TeacherFull"]
                             )
                           )
   return class_list
 ###############################################################################
-
-
 
 ###############################################################################
 # Функция, формирующая список всех занятий указанной группы
@@ -166,13 +163,12 @@ def create_list_of_classes_for_student(group, url, cookie):
                         double_class["DayNumber"],
                         double_class["Room"]["Name"],
                         double_class["Day"] - 1,         # приводим поля
-                        double_class["Time"]["Code"] - 1 # к нумерации с нуля
+                        double_class["Time"]["Code"] - 1, # к нумерации с нуля
+                        double_class["Class"]["TeacherFull"]
                         )
                       )
   return class_list
 ###############################################################################
-
-
 
 ###############################################################################
 # Функция, объединяющая двойные и более пары в одну запись.
@@ -198,8 +194,6 @@ def merge_list_of_classes(class_list):
     while_cond = i < (list_len - 1)
   return class_list
 ###############################################################################
-
-
 
 ###############################################################################
 # Функция, создающая ics-файл по сформированному списку занятий
@@ -235,7 +229,6 @@ def create_ics_file(schedule, start_date, academic_hour_duration, short_recreati
       day_offset = entry.week_day - first_day_of_semester
       first_class_date = start_date + timedelta(days=week_offset + day_offset)
 
-
     # Определяем время начала пары
     # Первая пара начинается в 9:00
     # Учитываем 10-минутные перемены между парами и 40 минут после второй пары
@@ -256,6 +249,7 @@ def create_ics_file(schedule, start_date, academic_hour_duration, short_recreati
     event.add('dtend', end_time)
     event.add('location', entry.room_number)
     event.add('uid', str(uuid4()))
+    event.add('description', entry.teacher)
 
     # Устанавливаем правило повторения
     event.add('rrule', {'freq': 'weekly', 'interval': 4, 'count': repeat_number})
@@ -277,12 +271,9 @@ def create_ics_file(schedule, start_date, academic_hour_duration, short_recreati
     f.write(cal.to_ical())
 ###############################################################################
 
-
-
 if educator_mode:
   unmerged_class_list = create_list_of_classes_for_educator(groups, educator, url, cookie)
 else:
   unmerged_class_list = create_list_of_classes_for_student(group, url, cookie)
 merged_class_list = merge_list_of_classes(unmerged_class_list)
 create_ics_file(merged_class_list, semester_starts_at, academic_hour_duration, short_recreation_duration, long_recreation_duration, calendar_file_name, repeat_number)
-
