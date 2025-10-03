@@ -8,64 +8,83 @@
 # See https://github.com/MPSU/schedule_parser/blob/master/LICENSE file for
 # licensing details.
 # ------------------------------------------------------------------------------
-from functools import total_ordering
 import requests
 import json
+import argparse
+import yaml
+import sys
+from functools import total_ordering
 from icalendar import Calendar, Event, Alarm
 from datetime import datetime, timedelta
 from uuid import uuid4
-import re
-
-# Для работы скрипты требуется сторонняя библиотека icalendar, которую можно
-# установить командой pip install icalendar
-
-# Перед запуском скрипта, необходимо указать режим работы (для студента или
-# для преподавателя), а также группу/группы, преподавателя и дату начала
-# семестра.
-
-# В режиме работы для студента скрипт парсит расписание только одной группы и
-# создает расписание всех её занятий.
-# В режиме работы для преподавателя скрипт парсит расписание всех указанных
-# групп и создает расписание тех занятий, которые ведет указанный преподаватель
-# у этих групп.
-
-# В скрипте можно настроить длину академического часа, а также длинной и
-# короткой перемен.
-
-# Кроме того, в скрипте можно указать словарь для замены длинных названий
-# на удобные пользователю аббревиатуры.
 
 ###############################################################################
-# Область конфигурации
+# Конфиг по умолчанию
 ###############################################################################
-# Режим работы (True — преподавательский, False — студенческий)
-educator_mode = True
-group = "ИВТ-14М"  # указывается если educator_mode = False
-educator = "Калёнов Александр Дмитриевич"  # указывается если educator_mode = True
-groups = [
-    "ИВТ-31В",
-    "ПИН-31",
-    "ПИН-32",
-    "ПИН-33",
-    "ИВТ-14М",
-]  # указывается если educator_mode = True
-
-academic_hour_duration = 40  # Длительность академического часа
-short_recreation_duration = 10  # Длительность короткой перемены
-long_recreation_duration = 40  # Длительность большой перемены
-
-semester_starts_at = "01-09-2025"  # Дата начала семестра (первого учебного дня)
-
-class_names_cast = {  # Переименовывание дисциплин
-    "Микропроцессорные средства и системы": "МПСиС",
-    "Микропроцессорные системы и средства": "МПСиС",
-    "Функциональная верификация": "FV",
+DEFAULT_CONFIG = {
+    #    "mode": "educator",  # educator | student (задаётся в командной строке)
+    "educator": "Солодовников Андрей Павлович",  # если mode = "educator"
+    "groups": ["ИВТ-24М", "ИВТ-34"],  # если mode = "educator"
+    "group": "",  # если mode = "student"
+    "academic_hour_duration": 40,  # Длительность академического часа
+    "short_recreation_duration": 10,  # Длительность короткой перемены
+    "long_recreation_duration": 40,  # Длительность большой перемены
+    "semester_starts_at": None,  # Дата начала семестра (первого учебного дня)
+    "class_names_cast": {
+        "Микропроцессорные средства и системы": "МПСиС",
+        "Микропроцессорные системы и средства": "МПСиС",
+        "Функциональная верификация": "FV",
+        "[ДВ] Универсальная методология верификации (UVM)": "UVM",
+    },
+    "repeat_number": 5,  # число 4-недельных повторений
+    # (4 для 16-ти недель, 5 для добавления 17-18-ых недель)
+    "calendar_file_name": "schedule.ics",
+    "url": "https://miet.ru/schedule/data",
+    "cookie": None,
+    "excluded_disciplines": {"Практическая подготовка"},  # Удаление ненужных дисциплин
 }
+###############################################################################
 
-excluded_disciplines = {"Практическая подготовка"}  # Удаление ненужных дисциплин
 
-calendar_file_name = "schedule.ics"
-repeat_number = 5
+###############################################################################
+# Обработка аргументов командной строки
+###############################################################################
+def parse_args():
+    parser = argparse.ArgumentParser(description="Парсер расписания МИЭТ в ics-файл")
+    parser.add_argument(
+        "--mode",
+        choices=["educator", "student"],
+        required=True,
+        help="Режим работы: educator (преподаватель) или student (студент)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=False,
+        help="Путь к yaml-файлу конфигурации (необязательно)",
+    )
+    parser.add_argument(
+        "--group", type=str, required=False, help="Название группы (для режима student)"
+    )
+    return parser.parse_args()
+
+
+###############################################################################
+
+
+###############################################################################
+# Применение изменений переданного конфига
+###############################################################################
+def merge_dicts(default: dict, override: dict) -> dict:
+    result = default.copy()
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = merge_dicts(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
 ###############################################################################
 
 url = "https://miet.ru/schedule/data"
@@ -148,16 +167,21 @@ class ScheduleEntry:
 # Функция, формирующая название занятия для записи в календаре.
 # Позволяет изменить название на аббревиатуру из словаря.
 ###############################################################################
-def get_class_name(name):
+def get_class_name(name, class_names_cast):
     long_name = name
     class_type = ""
     res_name = ""
     if " [" in name:
         class_type += " [" + name.split(" [")[1]
         long_name = long_name.replace(class_type, "")
-    if long_name in class_names_cast:
-        res_name += class_names_cast[long_name]
-    else:
+    # Проверяем каждый ключ в словаре аббревиатур на вхождение в название предмета
+    # (в этом случае не требуется чистить различный мусор, который может быть в
+    # названии у дисциплин по выбору)
+    for key in sorted(class_names_cast, key=len, reverse=True):
+        if key in long_name:
+            res_name += class_names_cast[key]
+            break
+    if not res_name:
         res_name += long_name
     res_name += class_type
     return res_name
@@ -172,8 +196,13 @@ def get_class_name(name):
 # Проходится по всем занятиям всех указанных групп, и если это занятие ведет
 # указанный преподаватель, добавляет это занятие в итоговый список
 ###############################################################################
-def create_list_of_classes_for_educator(groups, educator, url, cookie):
+def create_list_of_classes_for_educator(config):
     class_list = []
+    groups = config["groups"]
+    educator = config["educator"]
+    url = config["url"]
+    cookie = config["cookie"]
+    class_names_cast = config["class_names_cast"]
     for group in groups:
         args = {"group": group}
         raw_schedule = requests.get(url=url, params=args, headers=cookie).json()["Data"]
@@ -181,13 +210,18 @@ def create_list_of_classes_for_educator(groups, educator, url, cookie):
             if double_class["Class"]["TeacherFull"] == educator:
                 class_list.append(
                     ScheduleEntry(
-                        get_class_name(double_class["Class"]["Name"]) + " " + group,
+                        get_class_name(double_class["Class"]["Name"], class_names_cast)
+                        + " "
+                        + group,
                         double_class["DayNumber"],
                         double_class["Room"]["Name"],
                         double_class["Day"] - 1,  # приводим поля
                         double_class["Time"]["Code"] - 1,  # к нумерации с нуля
                     )
                 )
+    if not class_list:
+        print("У преподавателя {} нет занятий в группах {}".format(educator, groups))
+        sys.exit(2)
     return class_list
 
 
@@ -197,14 +231,18 @@ def create_list_of_classes_for_educator(groups, educator, url, cookie):
 ###############################################################################
 # Функция, формирующая список всех занятий указанной группы
 ###############################################################################
-def create_list_of_classes_for_student(group, url, cookie):
+def create_list_of_classes_for_student(config):
     class_list = []
+    group = config["group"]
+    url = config["url"]
+    cookie = config["cookie"]
+    class_names_cast = config["class_names_cast"]
     args = {"group": group}
     raw_schedule = requests.get(url=url, params=args, headers=cookie).json()["Data"]
     for double_class in raw_schedule:
         class_list.append(
             ScheduleEntry(
-                get_class_name(double_class["Class"]["Name"]),
+                get_class_name(double_class["Class"]["Name"], class_names_cast),
                 double_class["DayNumber"],
                 double_class["Room"]["Name"],
                 double_class["Day"] - 1,  # приводим поля
@@ -245,17 +283,47 @@ def merge_list_of_classes(class_list):
 
 
 ###############################################################################
+# Функци, которые позволяют предположить дату анализируемого семестра.
+# В получаемом расписании говорится о том, для какого оно семестра строкой вида:
+# "Такой-то семестр XXXX/XXXX" (к примеру: "Осенний семестр 2025/2026")
+# Если семестр осенний, то дата его начала по умолчанию — это первый рабочий
+# день начиная с первого сентября.
+# Если семестр весенний, то дата его начала по умолчанию — это второй
+# понедельник февраля.
+###############################################################################
+def calculate_semester_start(config):
+    """Динамически вычисляет дату начала семестра."""
+    url = config["url"]
+    args = {"group": config["groups"][0]}
+    cookie = config["cookie"]
+    semester = requests.get(url=url, params=args, headers=cookie).json()["Semestr"]
+    d = None
+    year_pos = semester.find("/")
+    if semester.startswith("Осенний"):
+        year_pos = year_pos - 4
+        d = datetime(int(semester[year_pos : year_pos + 4]), 9, 1)
+        if d.weekday() >= 5:
+            d += timedelta(days=(7 - d.weekday()))
+    else:
+        year_pos = year_pos + 1
+        d = datetime(semester[year_pos : year_pos + 4], 2, 1)
+        while d.weekday() != 0:
+            d += timedelta(days=1)
+        d + timedelta(days=7)
+    semester_starts_at = d.strftime("%d-%m-%Y")
+    return semester_starts_at
+
+
+###############################################################################
 # Функция, создающая ics-файл по сформированному списку занятий
 ###############################################################################
-def create_ics_file(
-    schedule,
-    start_date,
-    academic_hour_duration,
-    short_recreation_duration,
-    long_recreation_duration,
-    file_name="schedule.ics",
-    repeat_number=4,
-):
+def create_ics_file(schedule, config):
+    start_date = config["semester_starts_at"]
+    academic_hour_duration = config["academic_hour_duration"]
+    short_recreation_duration = config["short_recreation_duration"]
+    long_recreation_duration = config["long_recreation_duration"]
+    file_name = config["calendar_file_name"]
+    repeat_number = config["repeat_number"]
     # Преобразуем строку в дату
     start_date = datetime.strptime(start_date, "%d-%m-%Y")
 
@@ -344,26 +412,43 @@ def base_class_name(name: str) -> str:
 
 
 ###############################################################################
-if educator_mode:
-    unmerged_class_list = create_list_of_classes_for_educator(
-        groups, educator, url, cookie
-    )
-else:
-    unmerged_class_list = create_list_of_classes_for_student(group, url, cookie)
 
-unmerged_class_list = [
-    entry
-    for entry in unmerged_class_list
-    if base_class_name(entry.class_name) not in excluded_disciplines
-]
 
-merged_class_list = merge_list_of_classes(unmerged_class_list)
-create_ics_file(
-    merged_class_list,
-    semester_starts_at,
-    academic_hour_duration,
-    short_recreation_duration,
-    long_recreation_duration,
-    calendar_file_name,
-    repeat_number,
-)
+def main():
+    args = parse_args()
+
+    config = DEFAULT_CONFIG.copy()
+    if args.config:
+        try:
+            with open(args.config, "r", encoding="utf-8") as f:
+                yaml_config = yaml.safe_load(f) or {}
+            config = merge_dicts(DEFAULT_CONFIG, yaml_config)
+        except Exception as e:
+            print(f"Ошибка чтения {args.config}: {e}")
+            sys.exit(1)
+
+    if config["semester_starts_at"] is None:
+        config["semester_starts_at"] = calculate_semester_start(config)
+        print(
+            "Не указана дата начала семестра.\nНачало семестра автоматически определено как {}, проверьте что эта дата верна!".format(
+                config["semester_starts_at"]
+            )
+        )
+
+    if args.mode == "educator":
+        unmerged = create_list_of_classes_for_educator(config)
+    else:
+        config["group"] = args.group
+        unmerged = create_list_of_classes_for_student(config)
+        unmerged_class_list = [
+            entry
+            for entry in unmerged_class_list
+            if base_class_name(entry.class_name) not in excluded_disciplines
+        ]
+
+    merged = merge_list_of_classes(unmerged)
+    create_ics_file(merged, config)
+
+
+if __name__ == "__main__":
+    main()
