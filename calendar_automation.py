@@ -4,7 +4,13 @@
 # Department     : Institute of Microdevices and Control Systems
 # Author(s)      : Andrei Solodovnikov
 # Email(s)       : hepoh@org.miet.ru
-#
+
+# Modified by    : Vyacheslav Rudakov
+# Organization   : National Research University of Electronic Technology (MIET)
+# Department     : Institute of Microdevices and Control Systems
+# Email          : 97rasdvatree@gmail.com
+# Fork repository: https://github.com/Korben-detka/schedule_parser
+
 # See https://github.com/MPSU/schedule_parser/blob/master/LICENSE file for
 # licensing details.
 # ------------------------------------------------------------------------------
@@ -13,23 +19,25 @@ import json
 import argparse
 import yaml
 import sys
+import re
 from functools import total_ordering
 from icalendar import Calendar, Event, Alarm
 from datetime import datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 ###############################################################################
 # Конфиг по умолчанию
 ###############################################################################
 DEFAULT_CONFIG = {
-    #    "mode": "educator",  # educator | student (задаётся в командной строке)
+    "mode": "student",  # educator | student (задаётся в командной строке)
     "educator": "Солодовников Андрей Павлович",  # если mode = "educator"
     "groups": ["ИВТ-24М", "ИВТ-34"],  # если mode = "educator"
-    "group": "",  # если mode = "student"
+    "group": "ИВТ-14М",  # если mode = "student"
     "academic_hour_duration": 40,  # Длительность академического часа
     "short_recreation_duration": 10,  # Длительность короткой перемены
     "long_recreation_duration": 40,  # Длительность большой перемены
-    "semester_starts_at": None,  # Дата начала семестра (первого учебного дня)
+    "semester_starts_at": "01-09-2025",  # Дата начала семестра (первого учебного дня)
     "class_names_cast": {
         "Микропроцессорные средства и системы": "МПСиС",
         "Микропроцессорные системы и средства": "МПСиС",
@@ -41,6 +49,8 @@ DEFAULT_CONFIG = {
     "calendar_file_name": "schedule.ics",
     "url": "https://miet.ru/schedule/data",
     "cookie": None,
+    "alarm_is_on": True,  # включить/выключить уведомление о парах
+    "alarm_minutes_before": 15,  # за сколько минут будет уведомление о парах
     "excluded_disciplines": {"Практическая подготовка"},  # Удаление ненужных дисциплин
 }
 ###############################################################################
@@ -54,7 +64,7 @@ def parse_args():
     parser.add_argument(
         "--mode",
         choices=["educator", "student"],
-        required=True,
+        required=False,
         help="Режим работы: educator (преподаватель) или student (студент)",
     )
     parser.add_argument(
@@ -205,7 +215,14 @@ def create_list_of_classes_for_educator(config):
     class_names_cast = config["class_names_cast"]
     for group in groups:
         args = {"group": group}
-        raw_schedule = requests.get(url=url, params=args, headers=cookie).json()["Data"]
+        data = _fetch_json(
+            url,
+            params={"group": group},
+            headers={"Accept": "application/json"},
+            cookies=(cookie if isinstance(cookie, dict) else None),
+        )
+        raw_schedule = data.get("Data", [])
+
         for double_class in raw_schedule:
             if double_class["Class"]["TeacherFull"] == educator:
                 class_list.append(
@@ -233,23 +250,46 @@ def create_list_of_classes_for_educator(config):
 ###############################################################################
 def create_list_of_classes_for_student(config):
     class_list = []
-    group = config["group"]
+
+    group = (config.get("group") or "").strip()
+    if not group:
+        raise ValueError("config['group'] must be a non-empty string")
+
     url = config["url"]
-    cookie = config["cookie"]
+    cookie_cfg = config.get("cookie") or None
+
+    # Определяем, что именно передавать: заголовок Cookie или cookies-параметр
+    headers = None
+    cookies = None
+    if isinstance(cookie_cfg, dict):
+        cookies = cookie_cfg
+    elif isinstance(cookie_cfg, str) and cookie_cfg:
+        headers = {"Cookie": cookie_cfg}
+    if headers is None:
+        headers = {"Accept": "application/json"}
+    else:
+        headers.setdefault("Accept", "application/json")
+
+    data = _fetch_json(url, params={"group": group}, headers=headers, cookies=cookies)
+    raw_schedule = data.get("Data", [])
+
     class_names_cast = config["class_names_cast"]
-    args = {"group": group}
-    raw_schedule = requests.get(url=url, params=args, headers=cookie).json()["Data"]
     for double_class in raw_schedule:
-        class_list.append(
-            ScheduleEntry(
-                get_class_name(double_class["Class"]["Name"], class_names_cast),
-                double_class["DayNumber"],
-                double_class["Room"]["Name"],
-                double_class["Day"] - 1,  # приводим поля
-                double_class["Time"]["Code"] - 1,  # к нумерации с нуля
-                double_class["Class"]["TeacherFull"],
+        try:
+            class_list.append(
+                ScheduleEntry(
+                    get_class_name(double_class["Class"]["Name"], class_names_cast),
+                    double_class["DayNumber"],
+                    double_class["Room"]["Name"],
+                    double_class["Day"] - 1,
+                    double_class["Time"]["Code"] - 1,
+                    double_class["Class"]["TeacherFull"],
+                )
             )
-        )
+        except KeyError:
+            # пропускаем некорректные элементы
+            continue
+
     return class_list
 
 
@@ -294,9 +334,17 @@ def merge_list_of_classes(class_list):
 def calculate_semester_start(config):
     """Динамически вычисляет дату начала семестра."""
     url = config["url"]
-    args = {"group": config["groups"][0]}
-    cookie = config["cookie"]
-    semester = requests.get(url=url, params=args, headers=cookie).json()["Semestr"]
+    group_for_semester = config.get("group") or (config.get("groups") or [None])[0]
+    data = _fetch_json(
+        url,
+        params={"group": group_for_semester},
+        headers={"Accept": "application/json"},
+        cookies=(
+            config.get("cookie") if isinstance(config.get("cookie"), dict) else None
+        ),
+    )
+    semester = data["Semestr"]
+
     d = None
     year_pos = semester.find("/")
     if semester.startswith("Осенний"):
@@ -306,10 +354,10 @@ def calculate_semester_start(config):
             d += timedelta(days=(7 - d.weekday()))
     else:
         year_pos = year_pos + 1
-        d = datetime(semester[year_pos : year_pos + 4], 2, 1)
+        d = datetime(int(semester[year_pos : year_pos + 4]), 2, 1)
         while d.weekday() != 0:
             d += timedelta(days=1)
-        d + timedelta(days=7)
+        d += timedelta(days=7)
     semester_starts_at = d.strftime("%d-%m-%Y")
     return semester_starts_at
 
@@ -324,6 +372,7 @@ def create_ics_file(schedule, config):
     long_recreation_duration = config["long_recreation_duration"]
     file_name = config["calendar_file_name"]
     repeat_number = config["repeat_number"]
+
     # Преобразуем строку в дату
     start_date = datetime.strptime(start_date, "%d-%m-%Y")
 
@@ -332,6 +381,8 @@ def create_ics_file(schedule, config):
 
     # Создаем объект календаря
     cal = Calendar()
+    cal.add("prodid", "-//MIET//Schedule Parser//RU")
+    cal.add("version", "2.0")
 
     # Определяем продолжительность пары
     pair_duration = academic_hour_duration * 2
@@ -343,12 +394,13 @@ def create_ics_file(schedule, config):
             entry.duration * pair_duration
             + (entry.duration - 1) * short_recreation_duration
         )
+
         # Вычисляем смещение для первой недели с учетом дня недели начала семестра
         if (entry.week_day < first_day_of_semester) and (entry.week_code == 0):
             # Если целевой день недели 1-ой учебной недели идет до первого учебного
             # дня, переносим занятие на следующую итерацию "1-го числителя"
             week_offset = (entry.week_code + 4) * 7
-            day_offset = entry.week_day - first_day_of_semester - 1
+            day_offset = entry.week_day - first_day_of_semester
             first_class_date = start_date + timedelta(days=week_offset + day_offset)
         else:
             # Если целевой день недели идет во время или после дня недели первого
@@ -366,7 +418,7 @@ def create_ics_file(schedule, config):
         )  # Смещение для каждой пары
 
         # Учитываем, что перемена после второй пары составляет 40 минут
-        if entry.slot_number > 2:
+        if entry.slot_number >= 2:  # TODO check this
             start_time += timedelta(
                 minutes=(long_recreation_duration - short_recreation_duration)
             )
@@ -388,9 +440,15 @@ def create_ics_file(schedule, config):
 
         # Создаем напоминание (уведомление)
         alarm = Alarm()
-        alarm.add("action", "DISPLAY")
+        if config["alarm_is_on"]:
+            alarm.add("action", "DISPLAY")
+        else:
+            alarm.add("action", "NONE")
+
         alarm.add("description", f"Reminder: {entry.class_name} in {entry.room_number}")
-        alarm.add("trigger", timedelta(minutes=-15))  # За 15 минут до начала
+        alarm.add(
+            "trigger", timedelta(minutes=-config["alarm_minutes_before"])
+        )  # За alarm_minutes_before начала пары
 
         # Добавляем напоминание в событие
         event.add_component(alarm)
@@ -411,6 +469,21 @@ def base_class_name(name: str) -> str:
     return re.sub(r"\s+[А-ЯA-Z\-0-9]{3,}$", "", name).strip()
 
 
+def _fetch_json(url, params, headers=None, cookies=None, timeout=(5, 10)):
+    resp = requests.get(
+        url=url, params=params, headers=headers, cookies=cookies, timeout=timeout
+    )
+    resp.raise_for_status()  # поднимет HTTPError при 4xx/5xx
+    try:
+        return resp.json()
+    except ValueError:
+        ct = resp.headers.get("Content-Type", "")
+        preview = resp.text[:200]
+        raise RuntimeError(
+            f"Non-JSON response: status={resp.status_code}, content-type={ct}, body[:200]={preview!r}"
+        )
+
+
 ###############################################################################
 
 
@@ -427,26 +500,35 @@ def main():
             print(f"Ошибка чтения {args.config}: {e}")
             sys.exit(1)
 
+    # Переопределяем mode из аргументов, если указан
+    if args.mode:
+        config["mode"] = args.mode
+
     if config["semester_starts_at"] is None:
         config["semester_starts_at"] = calculate_semester_start(config)
         print(
-            "Не указана дата начала семестра.\nНачало семестра автоматически определено как {}, проверьте что эта дата верна!".format(
-                config["semester_starts_at"]
-            )
+            f"Не указана дата начала семестра.\n"
+            f"Начало семестра автоматически определено как {config['semester_starts_at']}, "
+            f"проверьте что эта дата верна!"
         )
 
-    if args.mode == "educator":
+    # Получаем данные в зависимости от режима
+    if config["mode"] == "educator":
         unmerged = create_list_of_classes_for_educator(config)
     else:
-        config["group"] = args.group
+        # Переопределяем group из аргументов, только если указан
+        if args.group:
+            config["group"] = args.group
         unmerged = create_list_of_classes_for_student(config)
-        unmerged_class_list = [
-            entry
-            for entry in unmerged_class_list
-            if base_class_name(entry.class_name) not in excluded_disciplines
-        ]
 
-    merged = merge_list_of_classes(unmerged)
+    # Фильтруем исключенные дисциплины
+    unmerged_class_list = [
+        entry
+        for entry in unmerged
+        if base_class_name(entry.class_name) not in config["excluded_disciplines"]
+    ]
+
+    merged = merge_list_of_classes(unmerged_class_list)
     create_ics_file(merged, config)
 
 
