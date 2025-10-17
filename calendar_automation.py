@@ -15,7 +15,6 @@
 # licensing details.
 # ------------------------------------------------------------------------------
 import requests
-import json
 import argparse
 import yaml
 import sys
@@ -24,13 +23,12 @@ from functools import total_ordering
 from icalendar import Calendar, Event, Alarm
 from datetime import datetime, timedelta
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 ###############################################################################
 # Конфиг по умолчанию
 ###############################################################################
 DEFAULT_CONFIG = {
-    "mode": "student",  # educator | student (задаётся в командной строке)
+    "mode": "educator",  # educator | student (задаётся в командной строке)
     "educator": "Солодовников Андрей Павлович",  # если mode = "educator"
     "groups": ["ИВТ-24М", "ИВТ-34"],  # если mode = "educator"
     "group": "ИВТ-14М",  # если mode = "student"
@@ -52,6 +50,7 @@ DEFAULT_CONFIG = {
     "alarm_is_on": True,  # включить/выключить уведомление о парах
     "alarm_minutes_before": 15,  # за сколько минут будет уведомление о парах
     "excluded_disciplines": {"Практическая подготовка"},  # Удаление ненужных дисциплин
+    "teacher_in_description": True,  # показывать или нет преподавателя в описании пары
 }
 ###############################################################################
 
@@ -234,6 +233,7 @@ def create_list_of_classes_for_educator(config):
                         double_class["Room"]["Name"],
                         double_class["Day"] - 1,  # приводим поля
                         double_class["Time"]["Code"] - 1,  # к нумерации с нуля
+                        double_class["Class"]["TeacherFull"],
                     )
                 )
     if not class_list:
@@ -372,6 +372,7 @@ def create_ics_file(schedule, config):
     long_recreation_duration = config["long_recreation_duration"]
     file_name = config["calendar_file_name"]
     repeat_number = config["repeat_number"]
+    teacher_on = config["teacher_in_description"]
 
     # Преобразуем строку в дату
     start_date = datetime.strptime(start_date, "%d-%m-%Y")
@@ -433,7 +434,8 @@ def create_ics_file(schedule, config):
         event.add("dtend", end_time)
         event.add("location", entry.room_number)
         event.add("uid", str(uuid4()))
-        event.add("description", entry.teacher)
+        if teacher_on:
+            event.add("description", entry.teacher)
 
         # Устанавливаем правило повторения
         event.add("rrule", {"freq": "weekly", "interval": 4, "count": repeat_number})
