@@ -51,6 +51,8 @@ DEFAULT_CONFIG = {
     "alarm_minutes_before": 15,  # за сколько минут будет уведомление о парах
     "excluded_disciplines": {"Практическая подготовка"},  # Удаление ненужных дисциплин
     "teacher_in_description": True,  # показывать или нет преподавателя в описании пары
+    "class_prefix": "", # space not included, for example "MIET" - > "MIETМПСиС", "MIETUVM" ...
+    "class_suffix": ""
 }
 ###############################################################################
 
@@ -413,7 +415,9 @@ def create_ics_file(schedule, config):
 
         # Создаем событие
         event = Event()
-        event.add("summary", entry.class_name)
+        prefix = config.get("class_prefix", "")
+        suffix = config.get("class_suffix", "")
+        event.add("summary", f"{prefix}{entry.class_name}{suffix}")
         event.add("dtstart", start_time)
         event.add("dtend", end_time)
         event.add("location", entry.room_number)
