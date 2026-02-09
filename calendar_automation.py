@@ -35,7 +35,7 @@ DEFAULT_CONFIG = {
     "academic_hour_duration": 40,  # Длительность академического часа
     "short_recreation_duration": 10,  # Длительность короткой перемены
     "long_recreation_duration": 40,  # Длительность большой перемены
-    "semester_starts_at": "01-09-2025",  # Дата начала семестра (первого учебного дня)
+    "semester_starts_at": "05-02-2026",  # Дата начала семестра (первого учебного дня)
     "class_names_cast": {
         "Микропроцессорные средства и системы": "МПСиС",
         "Микропроцессорные системы и средства": "МПСиС",
@@ -53,7 +53,6 @@ DEFAULT_CONFIG = {
     "teacher_in_description": True,  # показывать или нет преподавателя в описании пары
 }
 ###############################################################################
-
 
 ###############################################################################
 # Обработка аргументов командной строки
@@ -77,9 +76,7 @@ def parse_args():
     )
     return parser.parse_args()
 
-
 ###############################################################################
-
 
 ###############################################################################
 # Применение изменений переданного конфига
@@ -93,12 +90,10 @@ def merge_dicts(default: dict, override: dict) -> dict:
             result[k] = v
     return result
 
-
 ###############################################################################
 
 url = "https://miet.ru/schedule/data"
 cookie = None
-
 
 ###############################################################################
 # Класс записи занятия в расписании
@@ -168,9 +163,7 @@ class ScheduleEntry:
     def __repr__(self):
         return f"\n{self.class_name}\n\tweek_code  : {self.week_code}\n\tweek_day   : {self.week_day}\n\troom_number: {self.room_number}\n\tduration   : {self.duration}"
 
-
 ###############################################################################
-
 
 ###############################################################################
 # Функция, формирующая название занятия для записи в календаре.
@@ -195,9 +188,7 @@ def get_class_name(name, class_names_cast):
     res_name += class_type
     return res_name
 
-
 ###############################################################################
-
 
 ###############################################################################
 # Функция, формирующая список занятий, для указанных групп указанного
@@ -241,9 +232,7 @@ def create_list_of_classes_for_educator(config):
         sys.exit(2)
     return class_list
 
-
 ###############################################################################
-
 
 ###############################################################################
 # Функция, формирующая список всех занятий указанной группы
@@ -292,9 +281,7 @@ def create_list_of_classes_for_student(config):
 
     return class_list
 
-
 ###############################################################################
-
 
 ###############################################################################
 # Функция, объединяющая двойные и более пары в одну запись.
@@ -318,9 +305,7 @@ def merge_list_of_classes(class_list):
         i += 1
     return class_list
 
-
 ###############################################################################
-
 
 ###############################################################################
 # Функци, которые позволяют предположить дату анализируемого семестра.
@@ -360,7 +345,6 @@ def calculate_semester_start(config):
         d += timedelta(days=7)
     semester_starts_at = d.strftime("%d-%m-%Y")
     return semester_starts_at
-
 
 ###############################################################################
 # Функция, создающая ics-файл по сформированному списку занятий
@@ -462,14 +446,12 @@ def create_ics_file(schedule, config):
     with open(file_name, "wb") as f:
         f.write(cal.to_ical())
 
-
 def base_class_name(name: str) -> str:
     # отрезаем всё после первой скобки […
     name = name.split(" [")[0]
     # если в преподавательском режиме к названию приписана группа,
     # убираем последнюю словесную часть вида "… ИВТ-31В"
     return re.sub(r"\s+[А-ЯA-Z\-0-9]{3,}$", "", name).strip()
-
 
 def _fetch_json(url, params, headers=None, cookies=None, timeout=(5, 10)):
     resp = requests.get(
@@ -485,9 +467,7 @@ def _fetch_json(url, params, headers=None, cookies=None, timeout=(5, 10)):
             f"Non-JSON response: status={resp.status_code}, content-type={ct}, body[:200]={preview!r}"
         )
 
-
 ###############################################################################
-
 
 def main():
     args = parse_args()
@@ -524,15 +504,22 @@ def main():
         unmerged = create_list_of_classes_for_student(config)
 
     # Фильтруем исключенные дисциплины
+    excluded = set(config["excluded_disciplines"])
+
+    # Если исключённая дисциплина переименовывается (есть в class_names_cast),
+    # то исключаем и её
+    for long_name, short_name in config["class_names_cast"].items():
+        if long_name in excluded:
+            excluded.add(short_name)
+
     unmerged_class_list = [
         entry
         for entry in unmerged
-        if base_class_name(entry.class_name) not in config["excluded_disciplines"]
+        if base_class_name(entry.class_name) not in excluded
     ]
 
     merged = merge_list_of_classes(unmerged_class_list)
     create_ics_file(merged, config)
-
 
 if __name__ == "__main__":
     main()
