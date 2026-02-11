@@ -178,9 +178,8 @@ def get_class_name(name, class_names_cast):
     if " [" in name:
         class_type += " [" + name.split(" [")[1]
         long_name = long_name.replace(class_type, "")
-    # Проверяем каждый ключ в словаре аббревиатур на вхождение в название предмета
-    # (в этом случае не требуется чистить различный мусор, который может быть в
-    # названии у дисциплин по выбору)
+    # Убираем префикс [ДВ] в начале дисциплины
+    long_name = re.sub(r"^\s*\[ДВ\]\s*", "", long_name).strip()
     for key in sorted(class_names_cast, key=len, reverse=True):
         if key in long_name:
             res_name += class_names_cast[key]
